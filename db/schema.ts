@@ -1,0 +1,28 @@
+import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+
+export const rooms = sqliteTable("rooms", {
+  id: text("id").primaryKey(),
+  code: text("code").notNull().unique(),
+  status: text("status").notNull().default("waiting"),
+  round: integer("round").notNull().default(1),
+  articleIndex: integer("article_index").notNull().default(0),
+  startedAt: integer("started_at"),
+  updatedAt: integer("updated_at").notNull(),
+  policeToken: text("police_token").notNull(),
+  policeName: text("police_name").notNull(),
+  policeReady: integer("police_ready", { mode: "boolean" }).notNull().default(false),
+  policeProgress: integer("police_progress").notNull().default(0),
+  policeCorrect: integer("police_correct").notNull().default(0),
+  policeTyped: integer("police_typed").notNull().default(0),
+  policeSeq: integer("police_seq").notNull().default(0),
+  policeSeenAt: integer("police_seen_at").notNull(),
+  thiefToken: text("thief_token"),
+  thiefName: text("thief_name"),
+  thiefReady: integer("thief_ready", { mode: "boolean" }).notNull().default(false),
+  thiefProgress: integer("thief_progress").notNull().default(0),
+  thiefCorrect: integer("thief_correct").notNull().default(0),
+  thiefTyped: integer("thief_typed").notNull().default(0),
+  thiefSeq: integer("thief_seq").notNull().default(0),
+  thiefSeenAt: integer("thief_seen_at"),
+  winner: text("winner"),
+});
