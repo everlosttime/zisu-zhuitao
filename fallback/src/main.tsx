@@ -1,10 +1,13 @@
-import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
+import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import Peer, { type DataConnection } from "peerjs";
 import { ARTICLES } from "../../lib/articles.ts";
 import { distanceGapMeters, normalizeForTyping, remainingRoundMs, resolveWinner, scoreSubmission } from "../../lib/game.ts";
 import { applyPeerMessage, createPeerRoom, estimateHostClockOffset, finishPeerRoom, normalizeRoomCode, replayPeerRoom, type PeerMessage, type PeerRoom, type Role } from "./peer-room.ts";
 import "./style.css";
+import "./cinema.css";
+import RaceScene from "./RaceScene";
+import { subtitleWindow } from "./subtitles";
 
 type WireMessage = PeerMessage
   | { type: "state"; room: PeerRoom }
@@ -24,6 +27,9 @@ function App() {
   const [room, setRoom] = useState<PeerRoom | null>(null);
   const [role, setRole] = useState<Role | null>(null);
   const [typed, setTyped] = useState("");
+  const composing = useRef(false);
+  const [imeDraft,setImeDraft] = useState<string|null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [clock, setClock] = useState(Date.now());
@@ -33,7 +39,7 @@ function App() {
   const connectionRef = useRef<DataConnection | null>(null);
   const roomRef = useRef<PeerRoom | null>(null);
 
-  const updateRoom = (next: PeerRoom) => { roomRef.current = next; setRoom(next); };
+  const updateRoom = (next: PeerRoom) => { if (roomRef.current && next.round !== roomRef.current.round) setTyped(""); roomRef.current = next; setRoom(next); };
   const send = (message: WireMessage) => {
     const connection = connectionRef.current;
     if (connection?.open) connection.send(message);
@@ -171,39 +177,48 @@ function App() {
     if (role === "police") { const next = replayPeerRoom(room, ARTICLES[room.round % ARTICLES.length]); updateRoom(next); broadcast(next); }
     else send({ type: "replay-request" });
   };
+  const synchronizedClock = clock + (role === "thief" ? hostOffset : 0);
+  const started = !!room?.startedAt && synchronizedClock >= room.startedAt;
+  useEffect(() => { if(started && room?.status === 'playing') inputRef.current?.focus(); }, [started, room?.status]);
 
-  if (!room) return <main className="landing-shell"><section className="lobby-card">
-    <header className="brand"><span className="brand-mark">⚡</span><span>字速追逃</span><span className="backup-badge">独立联机入口</span></header>
-    <div className="lobby-grid"><div className="lobby-copy"><span className="eyebrow">双人中文打字对战</span><h1>打得快，<br/><em>追得上。</em></h1><p>一个当警察，一个当小偷。两分钟里，每个正确的字都会改变两米追逐距离。</p><div className="mini-rules"><span>⏱ 2 分钟一局</span><span>👥 房间号联机</span><span>🔒 无需注册</span></div></div>
-    <div className="join-panel"><label>你的昵称</label><input value={name} onChange={e=>setName(e.target.value)} maxLength={12} placeholder="例如：小明"/>
-      <button className="primary" disabled={busy || !name.trim()} onClick={createRoom}>🛡 创建房间，当警察</button><div className="divider">或者加入朋友的房间</div>
-      <label>六位房间号</label><div className="join-row"><input value={joinCode} onChange={e=>setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0,6))} placeholder="例如：A7K2M9"/><button disabled={busy || !name.trim() || joinCode.length!==6} onClick={joinRoom}>加入</button></div>
-      {busy && <p className="notice">正在建立联机通道……</p>}{error && <p className="error">{error}</p>}<p className="host-note">房主在对局期间请保持页面打开。</p>
-    </div></div></section></main>;
+  if (!room) return <main className="cinema-lobby">
+    <RaceScene gap={18} progress={0} running role="police" cinematic/>
+    <div className="lobby-shade"/>
+    <header className="cinema-brand"><span className="brand-symbol">Z</span> 字速追逃 <small>3D CHASE</small></header>
+    <section className="lobby-intro"><span className="overline">中文打字 · 双人实时追逐</span><h1>下一秒，<br/>追上你。</h1><p>穿过街道，紧追不舍。<br/>每一个正确的字，让你前进两米。</p><div className="lobby-tags"><span>3D 城市街道</span><span>字幕式打字</span><span>120 秒追逐</span></div></section>
+    <section className="connection-panel"><span className="overline">准备进入街道</span><h2>和朋友跑一场</h2><label htmlFor="nickname">你的昵称</label><input id="nickname" value={name} onChange={e=>setName(e.target.value)} maxLength={8} placeholder="输入你的名字"/>
+      <button className="primary" disabled={busy || !name.trim()} onClick={createRoom}>创建房间 · 扮演警察 <span>↗</span></button><div className="divider">已有房间？加入追逐</div>
+      <label htmlFor="roomcode">六位房间号</label><div className="join-row"><input id="roomcode" value={joinCode} onChange={e=>setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0,6))} placeholder="A7K2M9"/><button disabled={busy || !name.trim() || joinCode.length!==6} onClick={joinRoom}>加入</button></div>
+      {busy && <p className="notice">正在建立联机通道……</p>}{error && <p role="alert" className="error">{error}</p>}<p className="host-note">双方使用同一个入口。对局时请保持页面打开。</p>
+    </section><footer className="lobby-footer">双手就位。目光向前。 <span>每字 2 米 / 初始间距 20 米</span></footer>
+  </main>;
 
   const own = role === "police" ? room.police : room.thief;
   const score = scoreSubmission(room.article, typed, own?.progress || 0);
-  const synchronizedClock = clock + (role === "thief" ? hostOffset : 0);
-  const started = !!room.startedAt && synchronizedClock >= room.startedAt;
   const remaining = room.startedAt ? remainingRoundMs(room.startedAt, synchronizedClock, room.durationMs) : room.durationMs;
   const elapsedMinutes = room.startedAt ? Math.max(.05, (synchronizedClock-room.startedAt)/60000) : 1;
   const speed = Math.round((own?.progress || 0)/elapsedMinutes);
   const accuracy = own?.typed ? Math.round(own.correct/own.typed*100) : 100;
   const gap = distanceGapMeters(room.police.progress, room.thief?.progress || 0);
-  const policeLeft = Math.min(67, Math.max(3, 67-Math.max(0,gap)*2.7));
-  const article = normalizeForTyping(room.article), typedLength = normalizeForTyping(typed).length;
+  const subtitle=subtitleWindow(room.article,score.correctChars);
+  const completed=Math.max(0,score.correctChars-subtitle.start);
   const countdown = room.startedAt ? Math.max(0, Math.ceil((room.startedAt-synchronizedClock)/1000)) : 0;
   const shareUrl = `${location.origin}${location.pathname}?room=${room.code}`;
+  const currentInput=typed.slice(subtitle.start);
 
-  return <main className="game-shell"><header className="game-header"><div className="brand compact"><span className="brand-mark">⚡</span><span>字速追逃</span></div><button className="room-code" onClick={async()=>{await navigator.clipboard.writeText(shareUrl);setCopied(true);setTimeout(()=>setCopied(false),1500)}}>房间 <strong>{room.code}</strong> {copied?"✓":"⧉"}</button><span className="round-label">第 {room.round} 局</span></header>
-    <section className="race-stage"><div className="sun"/><div className="distance-pill">{gap<=0?"抓到了！":`相距 ${Math.ceil(gap)} 米`}</div><div className="character police" style={{left:`${policeLeft}%`}}><span>{room.police.name}</span></div><div className="character thief"><span>{room.thief?.name||"等待加入"}</span></div><div className="road"/>{room.status==="playing"&&!started&&<div className="countdown">{countdown||"开始"}</div>}</section>
-    <section className="game-board"><aside className="score-card police-score"><div>🛡 警察</div><strong>{room.police.name}</strong><b>{room.police.progress}<small> 字</small></b></aside>
-    <div className="typing-card"><div className="typing-topline"><span className="timer">⏱ {String(Math.floor(remaining/60000)).padStart(2,"0")}:{String(Math.floor(remaining%60000/1000)).padStart(2,"0")}</span><span>⚡ {speed} 字/分</span><span>正确率 {accuracy}%</span></div>
-      {room.status==="waiting"?<div className="center-panel"><div className="round-icon">👥</div><h2>{room.thief?"双方就位，准备出发":"房间已创建，等待朋友"}</h2><p>{room.thief?`${room.police.name} 对战 ${room.thief.name}`:`把房间号 ${room.code} 发给朋友`}</p><button className="primary ready" disabled={!room.thief||!!own?.ready} onClick={ready}>{own?.ready?"✓ 已准备，等待对方":"🏃 我准备好了"}</button></div>
-      :room.status==="finished"?<div className="center-panel"><span className="result-stamp">本局结束</span><h2>{room.winner==="void"?"本局无人输入":room.winner===role?"你赢了！":"差一点，再来一局！"}</h2><p>{room.winner==="police"?"警察成功追上了小偷":room.winner==="thief"?"小偷坚持到了倒计时结束":"双方都没有开始打字"}</p><button className="primary ready" onClick={replay}>↻ 再来一局</button></div>
-      :<><div className="article-text"><span className="done">{article.slice(0,score.correctChars)}</span><span className={typedLength>score.correctChars?"wrong":"cursor-char"}>{article.slice(score.correctChars,Math.max(score.correctChars+1,typedLength))}</span><span>{article.slice(Math.max(score.correctChars+1,typedLength),score.correctChars+180)}</span></div><label>从高亮位置继续输入</label><textarea value={typed} autoFocus disabled={!started} spellCheck={false} onPaste={e=>{e.preventDefault();setError("对战中不能粘贴文字")}} onChange={e=>submitProgress(e.target.value)} placeholder={started?"在这里开始输入……":"倒计时结束后即可输入"}/>{score.hasError&&<p className="typing-error">当前输入有误，请退格改正后继续</p>}</>}
-      {error&&<p className="error">{error}</p>}</div>
-    <aside className="score-card thief-score"><div>🏃 小偷</div><strong>{room.thief?.name||"等待朋友"}</strong><b>{room.thief?.progress||0}<small> 字</small></b></aside></section></main>;
+  return <main className="chase-game">
+    <RaceScene gap={gap} progress={own?.progress||0} running={room.status==='playing'&&started} role={role||'police'}/>
+    <div className="scene-vignette"/>
+    <header className="chase-hud"><div className="cinema-brand"><span className="brand-symbol">Z</span> 字速追逃 <small>3D</small></div><button className="share-room" onClick={async()=>{try {await navigator.clipboard.writeText(shareUrl);setCopied(true);setTimeout(()=>setCopied(false),1500);}catch{setError(`请手动分享房间号：${room.code}`);}}}>房间 {room.code} <span>{copied?'已复制':'复制邀请'}</span></button><span className="hud-round">第 {room.round} 局</span></header>
+    <div className="race-summary"><span className="overline">{role==='police'?'你的目标：追上前方的小偷':'你的目标：坚持到倒计时结束'}</span><div className="distance-number">{Math.max(0,Math.ceil(gap))}<small>米</small></div><span className="distance-caption">{gap<=0?'追捕成功':'双方距离'}</span></div>
+    <aside className="players-hud"><div><i className="police-dot"/><span>警察 · {room.police.name}</span><b>{room.police.progress*2} 米</b></div><div><i className="thief-dot"/><span>小偷 · {room.thief?.name||'等待加入'}</span><b>{(room.thief?.progress||0)*2} 米</b></div></aside>
+    <div className="timer-hud"><span>剩余时间</span><strong>{String(Math.floor(remaining/60000)).padStart(2,'0')}:{String(Math.floor(remaining%60000/1000)).padStart(2,'0')}</strong></div>
+    {room.status==='playing'&&!started&&<div className="start-count"><small>双手就位 · 即将出发</small><strong>{countdown||'开始'}</strong></div>}
+    {room.status==='waiting'?<section className="race-modal"><span className="overline">{room.thief?'对手已就位':'街道已经准备好'}</span><h2>{room.thief?'准备，开始追逐':'等待朋友加入'}</h2><p>{room.thief?`${room.police.name} 对战 ${room.thief.name}`:`把房间号 ${room.code} 发给朋友`}</p><button className="primary" disabled={!room.thief||!!own?.ready} onClick={ready}>{own?.ready?'已准备 · 等待对方':'我准备好了 →'}</button><small>每字两米，初始相距二十米。</small></section>
+    :room.status==='finished'?<section className="race-modal"><span className="overline">本局结束</span><h2>{room.winner==='void'?'本局无人输入':room.winner===role?'这次，你赢了。':'再来，一定追上。'}</h2><p>{room.winner==='police'?'警察成功追上小偷':room.winner==='thief'?'小偷坚持到了最后一秒':'准备好后再出发'}</p><button className="primary" onClick={replay}>再来一局 ↗</button></section>
+    :<section className="subtitle-deck" aria-label="打字字幕"><div className="subtitle-meta"><span>跟着字幕，继续向前</span><span>{speed} 字/分 <i/> 正确率 {accuracy}%</span></div><div className="chinese-subtitle" aria-label="当前中文字幕"><span className="subtitle-done">{subtitle.text.slice(0,completed)}</span><span className={score.hasError?'subtitle-wrong':'subtitle-current'}>{subtitle.text.slice(completed,completed+1)}</span><span>{subtitle.text.slice(completed+1)}</span></div><label className="sr-only" htmlFor="subtitle-input">输入当前字幕</label><textarea ref={inputRef} id="subtitle-input" rows={1} value={imeDraft ?? currentInput} disabled={!started} spellCheck={false} onPaste={e=>{e.preventDefault();setError('对战中不能粘贴文字');}} onDrop={e=>e.preventDefault()} onCompositionStart={e=>{composing.current=true;setImeDraft(e.currentTarget.value);}} onCompositionEnd={e=>{composing.current=false;setImeDraft(null);submitProgress(typed.slice(0,subtitle.start)+e.currentTarget.value);}} onChange={e=>{if(composing.current)setImeDraft(e.target.value);else submitProgress(typed.slice(0,subtitle.start)+e.target.value);}} placeholder={started?'在这里输入上方字幕……':'倒计时结束后开始输入'}/><div className="subtitle-hint">{score.hasError?'有个字打错了，退格修正后继续':'中文输入法可用 · 中英文标点通用 · 每字前进 2 米'}</div></section>}
+    {error&&<p role="alert" className="floating-error">{error}</p>}
+  </main>;
 }
 
-createRoot(document.getElementById("root")!).render(<StrictMode><App/></StrictMode>);
+createRoot(document.getElementById('root')!).render(<StrictMode><App/></StrictMode>);
