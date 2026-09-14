@@ -7,6 +7,7 @@ import { applyPeerMessage, createPeerRoom, estimateHostClockOffset, finishPeerRo
 import "./style.css";
 import "./cinema.css";
 import RaceScene from "./RaceScene";
+import ChaseAudio from "./ChaseAudio";
 import { subtitleWindow } from "./subtitles";
 import { connectionErrorMessage, createConnectionWatchdog, restrictedNetworkPeerOptions, type ConnectionWatchdog } from "./connection";
 
@@ -237,7 +238,7 @@ function App() {
     <RaceScene gap={18} progress={0} running role="police" cinematic/>
     <div className="lobby-shade"/>
     <header className="cinema-brand"><span className="brand-symbol">Z</span> 字速追逃 <small>3D CHASE</small></header>
-    <section className="lobby-intro"><span className="overline">中文打字 · 双人实时追逐</span><h1>下一秒，<br/>追上你。</h1><p>穿过街道，紧追不舍。<br/>每一个正确的字，让你前进两米。</p><div className="lobby-tags"><span>3D 城市街道</span><span>字幕式打字</span><span>120 秒追逐</span></div></section>
+    <section className="lobby-intro"><span className="overline">中文打字 · 双人实时追逐</span><h1>下一秒，<br/>追上你。</h1><p>穿过街道，紧追不舍。<br/>每一个正确的字，让你前进两米。</p><div className="lobby-tags"><span>方块小镇 · 坐骑追逐</span><span>字幕式打字</span><span>120 秒追逐</span></div></section>
     <section className="connection-panel"><span className="overline">准备进入街道</span><h2>和朋友跑一场</h2><label htmlFor="nickname">你的昵称</label><input id="nickname" value={name} onChange={e=>setName(e.target.value)} maxLength={8} placeholder="输入你的名字"/>
       <button className="primary" disabled={busy || !name.trim()} onClick={createRoom}>创建房间 · 扮演警察 <span>↗</span></button><div className="divider">已有房间？加入追逐</div>
       <label htmlFor="roomcode">六位房间号</label><div className="join-row"><input id="roomcode" value={joinCode} onChange={e=>setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0,6))} placeholder="A7K2M9"/><button disabled={busy || !name.trim() || joinCode.length!==6} onClick={joinRoom}>{error && lastConnectionAction === "join" ? "重新加入" : "加入"}</button></div>
@@ -258,11 +259,13 @@ function App() {
   const shareUrl = `${location.origin}${location.pathname}?room=${room.code}`;
   const currentInput=typed.slice(subtitle.start);
 
-  return <main className="chase-game">
+  return <main className={`chase-game voxel-game ${gap < 10 ? "danger-near" : ""}`}>
+    <ChaseAudio gap={gap} running={room.status==='playing'&&started}/>
     <RaceScene gap={gap} progress={own?.progress||0} running={room.status==='playing'&&started} role={role||'police'}/>
     <div className="scene-vignette"/>
     <header className="chase-hud"><div className="cinema-brand"><span className="brand-symbol">Z</span> 字速追逃 <small>3D</small></div><button className="share-room" onClick={async()=>{try {await navigator.clipboard.writeText(shareUrl);setCopied(true);setTimeout(()=>setCopied(false),1500);}catch{setError(`请手动分享房间号：${room.code}`);}}}>房间 {room.code} <span>{copied?'已复制':'复制邀请'}</span></button><span className="hud-round">第 {room.round} 局</span></header>
-    <div className="race-summary"><span className="overline">{role==='police'?'你的目标：追上前方的小偷':'你的目标：坚持到倒计时结束'}</span><div className="distance-number">{Math.max(0,Math.ceil(gap))}<small>米</small></div><span className="distance-caption">{gap<=0?'追捕成功':'双方距离'}</span></div>
+    <div className="race-summary"><span className="overline">{role==='police'?'你的目标：追上前方的小偷':'你的目标：坚持到倒计时结束'}</span><div className="distance-number">{Math.max(0,Math.ceil(gap))}<small>米</small></div><span className="distance-caption">{gap<=0?'追捕成功':gap>30?'真实距离 · 画面间距已压缩':'双方距离'}</span></div>
+    {room.status === "playing" && <div role="status" className={`chase-pressure ${gap < 10 ? "is-danger" : ""}`}>{gap < 10 ? (role === "thief" ? "警察就在身后！继续打字加速" : "马上追上！继续打字冲刺") : (role === "thief" ? "留意身后的摩托 · 打字拉开距离" : "盯紧前方自行车 · 打字追近")}</div>}
     <aside className="players-hud"><div><i className="police-dot"/><span>警察 · {room.police.name}</span><b>{room.police.progress*2} 米</b></div><div><i className="thief-dot"/><span>小偷 · {room.thief?.name||'等待加入'}</span><b>{(room.thief?.progress||0)*2} 米</b></div></aside>
     <div className="timer-hud"><span>剩余时间</span><strong>{String(Math.floor(remaining/60000)).padStart(2,'0')}:{String(Math.floor(remaining%60000/1000)).padStart(2,'0')}</strong></div>
     {room.status==='playing'&&!started&&<div className="start-count"><small>双手就位 · 即将出发</small><strong>{countdown||'开始'}</strong></div>}
