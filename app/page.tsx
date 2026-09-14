@@ -5,7 +5,7 @@ import { Check, Clock3, Copy, Footprints, RotateCcw, Shield, Users, Zap } from "
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { normalizeForTyping, remainingRoundMs, scoreSubmission, STARTING_GAP } from "@/lib/game";
+import { distanceGapMeters, normalizeForTyping, remainingRoundMs, scoreSubmission, STARTING_GAP } from "@/lib/game";
 
 type Player = { name: string; ready: boolean; progress: number; correct: number; typed: number };
 type Room = {
@@ -113,7 +113,7 @@ export default function Home() {
           <div className="lobby-copy">
             <span className="eyebrow">双人中文打字对战</span>
             <h1>打得快，<br/><em>追得上。</em></h1>
-            <p>一个当警察，一个当小偷。两分钟里，每个正确的字都会改变追逐距离。</p>
+            <p>一个当警察，一个当小偷。两分钟里，每个正确的字都会改变两米追逐距离。</p>
             <div className="mini-rules"><span><Clock3/> 2 分钟一局</span><span><Users/> 房间号联机</span><span><Shield/> 无需注册</span></div>
           </div>
           <div className="join-panel">
@@ -134,7 +134,7 @@ export default function Home() {
     </main>;
   }
 
-  const gap = STARTING_GAP + (room.thief?.progress || 0) - room.police.progress;
+  const gap = distanceGapMeters(room.police.progress, room.thief?.progress || 0);
   const policeLeft = Math.min(67, Math.max(3, 67 - Math.max(0, gap) * 2.7));
   const displayArticle = normalizeForTyping(room.article);
   const correct = localScore?.correctChars || 0;
@@ -163,7 +163,7 @@ export default function Home() {
       <aside className="score-card police-score">
         <div className="player-title"><Shield/> 警察 <span>{room.police.ready ? "已准备" : "未准备"}</span></div>
         <strong>{room.police.name}</strong><b>{room.police.progress}<small> 字</small></b>
-        <Progress value={Math.min(100, (room.police.progress / Math.max(1, STARTING_GAP + (room.thief?.progress || 0))) * 100)} />
+        <Progress value={Math.min(100, (room.police.progress / Math.max(1, STARTING_GAP / 2 + (room.thief?.progress || 0))) * 100)} />
       </aside>
 
       <div className="typing-card">

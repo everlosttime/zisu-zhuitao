@@ -1,5 +1,6 @@
 export const ROUND_MS = 120_000;
 export const STARTING_GAP = 20;
+export const METERS_PER_CHAR = 2;
 
 const PUNCTUATION: Record<string, string> = {
   "，": ",", "。": ".", "！": "!", "？": "?", "：": ":", "；": ";",
@@ -32,11 +33,15 @@ export function scoreSubmission(article: string, typed: string, previousProgress
 }
 
 export function resolveWinner(input: { policeProgress: number; thiefProgress: number; elapsedMs: number }) {
-  if (input.policeProgress >= STARTING_GAP + input.thiefProgress) return "police" as const;
+  if (distanceGapMeters(input.policeProgress, input.thiefProgress) <= 0) return "police" as const;
   if (input.elapsedMs >= ROUND_MS) {
     return input.policeProgress === 0 && input.thiefProgress === 0 ? "void" as const : "thief" as const;
   }
   return null;
+}
+
+export function distanceGapMeters(policeProgress: number, thiefProgress: number) {
+  return STARTING_GAP + (thiefProgress - policeProgress) * METERS_PER_CHAR;
 }
 
 export function canAcceptTyping(status: string, startedAt: number | null, now: number) {

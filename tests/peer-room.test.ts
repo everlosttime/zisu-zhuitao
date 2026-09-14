@@ -7,6 +7,7 @@ import {
   finishPeerRoom,
   normalizeRoomCode,
   replayPeerRoom,
+  estimateHostClockOffset,
   type PeerMessage,
 } from "../fallback/src/peer-room.ts";
 
@@ -69,4 +70,8 @@ test("再来一局会清空双方进度并替换文章", () => {
   assert.equal(next.thief?.progress, 0);
   assert.equal(next.police.ready, false);
   assert.equal(next.thief?.ready, false);
+});
+
+test("按往返时间中点估算房主时钟偏移", () => {
+  assert.equal(estimateHostClockOffset(1000, 1200, 2100), 1000);
 });

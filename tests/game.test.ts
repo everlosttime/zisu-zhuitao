@@ -8,6 +8,7 @@ import {
   sanitizeName,
   canAcceptTyping,
   remainingRoundMs,
+  distanceGapMeters,
 } from "../lib/game.ts";
 import { ARTICLES } from "../lib/articles.ts";
 
@@ -29,8 +30,14 @@ test("进度不能倒退也不能超过文章长度", () => {
   assert.equal(scoreSubmission("一路向前", "一路向前冲", 0).acceptedProgress, 4);
 });
 
-test("警察追平距离时获胜", () => {
-  assert.equal(resolveWinner({ policeProgress: 40, thiefProgress: 20, elapsedMs: 20_000 }), "police");
+test("每个正确字让双方距离变化两米", () => {
+  assert.equal(distanceGapMeters(0, 0), 20);
+  assert.equal(distanceGapMeters(1, 0), 18);
+  assert.equal(distanceGapMeters(0, 1), 22);
+});
+
+test("一个字两米时警察净领先十字即可获胜", () => {
+  assert.equal(resolveWinner({ policeProgress: 30, thiefProgress: 20, elapsedMs: 20_000 }), "police");
 });
 
 test("两分钟结束且双方有输入时小偷获胜", () => {

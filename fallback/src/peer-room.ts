@@ -35,6 +35,10 @@ export function normalizeRoomCode(value: string) {
   return ROOM_CODE.test(code) ? code : "";
 }
 
+export function estimateHostClockOffset(clientSentAt: number, clientReceivedAt: number, hostNow: number) {
+  return hostNow - (clientSentAt + clientReceivedAt) / 2;
+}
+
 function blankPlayer(name: string): Player {
   return { name: sanitizeName(name), ready: false, progress: 0, correct: 0, typed: 0 };
 }

@@ -2,11 +2,15 @@ import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import Peer, { type DataConnection } from "peerjs";
 import { ARTICLES } from "../../lib/articles.ts";
-import { normalizeForTyping, remainingRoundMs, resolveWinner, scoreSubmission, STARTING_GAP } from "../../lib/game.ts";
-import { applyPeerMessage, createPeerRoom, finishPeerRoom, normalizeRoomCode, replayPeerRoom, type PeerMessage, type PeerRoom, type Role } from "./peer-room.ts";
+import { distanceGapMeters, normalizeForTyping, remainingRoundMs, resolveWinner, scoreSubmission } from "../../lib/game.ts";
+import { applyPeerMessage, createPeerRoom, estimateHostClockOffset, finishPeerRoom, normalizeRoomCode, replayPeerRoom, type PeerMessage, type PeerRoom, type Role } from "./peer-room.ts";
 import "./style.css";
 
-type WireMessage = PeerMessage | { type: "state"; room: PeerRoom } | { type: "replay-request" };
+type WireMessage = PeerMessage
+  | { type: "state"; room: PeerRoom }
+  | { type: "replay-request" }
+  | { type: "clock-ping"; clientSentAt: number }
+  | { type: "clock-pong"; clientSentAt: number; hostNow: number };
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 function randomCode() {
@@ -23,6 +27,7 @@ function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [clock, setClock] = useState(Date.now());
+  const [hostOffset, setHostOffset] = useState(0);
   const [copied, setCopied] = useState(false);
   const peerRef = useRef<Peer | null>(null);
   const connectionRef = useRef<DataConnection | null>(null);
@@ -62,10 +67,21 @@ function App() {
     }, 200);
     return () => clearInterval(timer);
   }, [role]);
+  useEffect(() => {
+    if (role !== "thief") return;
+    const ping = () => send({ type: "clock-ping", clientSentAt: Date.now() });
+    ping();
+    const timer = window.setInterval(ping, 5000);
+    return () => clearInterval(timer);
+  }, [role]);
 
   const acceptHostMessage = (message: WireMessage) => {
     const current = roomRef.current;
     if (!current) return;
+    if (message.type === "clock-ping") {
+      send({ type: "clock-pong", clientSentAt: message.clientSentAt, hostNow: Date.now() });
+      return;
+    }
     if (message.type === "join") {
       if (current.thief) { send({ type: "state", room: current }); return; }
       const next = applyPeerMessage(current, message);
@@ -88,6 +104,9 @@ function App() {
       if (!message || typeof message !== "object" || !("type" in message)) return;
       if (isHost) acceptHostMessage(message);
       else if (message.type === "state") { updateRoom(message.room); setError(""); }
+      else if (message.type === "clock-pong") {
+        setHostOffset(estimateHostClockOffset(message.clientSentAt, Date.now(), message.hostNow));
+      }
     });
     connection.on("close", () => setError(isHost ? "对方已离开房间，可刷新页面重新创建" : "与房主的连接已断开，请重新加入"));
     connection.on("error", () => setError("联机通道出现异常，请刷新后重试"));
@@ -117,7 +136,12 @@ function App() {
     peer.on("open", () => {
       const connection = peer.connect(`zisu-${code}`, { reliable: true });
       connectHandlers(connection, false);
-      connection.on("open", () => { setRole("thief"); send({ type: "join", name }); setBusy(false); });
+      connection.on("open", () => {
+        setRole("thief");
+        send({ type: "join", name });
+        send({ type: "clock-ping", clientSentAt: Date.now() });
+        setBusy(false);
+      });
     });
     peer.on("error", event => { setBusy(false); setError(event.type === "peer-unavailable" ? "没有找到这个房间，请确认房主页面仍然打开" : "无法建立联机通道，请稍后重试"); });
   };
@@ -132,7 +156,8 @@ function App() {
 
   const submitProgress = (value: string) => {
     setTyped(value);
-    if (!room || !role || room.status !== "playing" || !room.startedAt || Date.now() < room.startedAt) return;
+    const synchronizedNow = Date.now() + (role === "thief" ? hostOffset : 0);
+    if (!room || !role || room.status !== "playing" || !room.startedAt || synchronizedNow < room.startedAt) return;
     const own = role === "police" ? room.police : room.thief;
     const score = scoreSubmission(room.article, value, own?.progress || 0);
     const message: PeerMessage = { type: "progress", role, progress: score.acceptedProgress, correct: score.correctChars, typed: score.typedChars };
@@ -149,7 +174,7 @@ function App() {
 
   if (!room) return <main className="landing-shell"><section className="lobby-card">
     <header className="brand"><span className="brand-mark">⚡</span><span>字速追逃</span><span className="backup-badge">独立联机入口</span></header>
-    <div className="lobby-grid"><div className="lobby-copy"><span className="eyebrow">双人中文打字对战</span><h1>打得快，<br/><em>追得上。</em></h1><p>一个当警察，一个当小偷。两分钟里，每个正确的字都会改变追逐距离。</p><div className="mini-rules"><span>⏱ 2 分钟一局</span><span>👥 房间号联机</span><span>🔒 无需注册</span></div></div>
+    <div className="lobby-grid"><div className="lobby-copy"><span className="eyebrow">双人中文打字对战</span><h1>打得快，<br/><em>追得上。</em></h1><p>一个当警察，一个当小偷。两分钟里，每个正确的字都会改变两米追逐距离。</p><div className="mini-rules"><span>⏱ 2 分钟一局</span><span>👥 房间号联机</span><span>🔒 无需注册</span></div></div>
     <div className="join-panel"><label>你的昵称</label><input value={name} onChange={e=>setName(e.target.value)} maxLength={12} placeholder="例如：小明"/>
       <button className="primary" disabled={busy || !name.trim()} onClick={createRoom}>🛡 创建房间，当警察</button><div className="divider">或者加入朋友的房间</div>
       <label>六位房间号</label><div className="join-row"><input value={joinCode} onChange={e=>setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0,6))} placeholder="例如：A7K2M9"/><button disabled={busy || !name.trim() || joinCode.length!==6} onClick={joinRoom}>加入</button></div>
@@ -158,15 +183,16 @@ function App() {
 
   const own = role === "police" ? room.police : room.thief;
   const score = scoreSubmission(room.article, typed, own?.progress || 0);
-  const started = !!room.startedAt && clock >= room.startedAt;
-  const remaining = room.startedAt ? remainingRoundMs(room.startedAt, clock, room.durationMs) : room.durationMs;
-  const elapsedMinutes = room.startedAt ? Math.max(.05, (clock-room.startedAt)/60000) : 1;
+  const synchronizedClock = clock + (role === "thief" ? hostOffset : 0);
+  const started = !!room.startedAt && synchronizedClock >= room.startedAt;
+  const remaining = room.startedAt ? remainingRoundMs(room.startedAt, synchronizedClock, room.durationMs) : room.durationMs;
+  const elapsedMinutes = room.startedAt ? Math.max(.05, (synchronizedClock-room.startedAt)/60000) : 1;
   const speed = Math.round((own?.progress || 0)/elapsedMinutes);
   const accuracy = own?.typed ? Math.round(own.correct/own.typed*100) : 100;
-  const gap = STARTING_GAP + (room.thief?.progress || 0) - room.police.progress;
+  const gap = distanceGapMeters(room.police.progress, room.thief?.progress || 0);
   const policeLeft = Math.min(67, Math.max(3, 67-Math.max(0,gap)*2.7));
   const article = normalizeForTyping(room.article), typedLength = normalizeForTyping(typed).length;
-  const countdown = room.startedAt ? Math.max(0, Math.ceil((room.startedAt-clock)/1000)) : 0;
+  const countdown = room.startedAt ? Math.max(0, Math.ceil((room.startedAt-synchronizedClock)/1000)) : 0;
   const shareUrl = `${location.origin}${location.pathname}?room=${room.code}`;
 
   return <main className="game-shell"><header className="game-header"><div className="brand compact"><span className="brand-mark">⚡</span><span>字速追逃</span></div><button className="room-code" onClick={async()=>{await navigator.clipboard.writeText(shareUrl);setCopied(true);setTimeout(()=>setCopied(false),1500)}}>房间 <strong>{room.code}</strong> {copied?"✓":"⧉"}</button><span className="round-label">第 {room.round} 局</span></header>
