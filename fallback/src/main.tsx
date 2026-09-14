@@ -1,6 +1,5 @@
 import { StrictMode, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import Peer, { type DataConnection } from "peerjs";
 import { ARTICLES } from "../../lib/articles.ts";
 import { distanceGapMeters, normalizeForTyping, remainingRoundMs, resolveWinner, scoreSubmission } from "../../lib/game.ts";
 import { applyPeerMessage, createPeerRoom, estimateHostClockOffset, finishPeerRoom, normalizeRoomCode, replayPeerRoom, type PeerMessage, type PeerRoom, type Role } from "./peer-room.ts";
@@ -9,7 +8,8 @@ import "./cinema.css";
 import RaceScene from "./RaceScene";
 import ChaseAudio from "./ChaseAudio";
 import { subtitleWindow } from "./subtitles";
-import { connectionErrorMessage, createConnectionWatchdog, restrictedNetworkPeerOptions, type ConnectionWatchdog } from "./connection";
+import { createConnectionWatchdog, type ConnectionWatchdog } from "./connection";
+import { connectRelay, type RelayConnection, type RelayStatus } from "./relay-transport";
 
 type WireMessage = PeerMessage
   | { type: "state"; room: PeerRoom }
@@ -39,16 +39,16 @@ function App() {
   const [clock, setClock] = useState(Date.now());
   const [hostOffset, setHostOffset] = useState(0);
   const [copied, setCopied] = useState(false);
-  const peerRef = useRef<Peer | null>(null);
-  const connectionRef = useRef<DataConnection | null>(null);
+  const relayRef = useRef<RelayConnection | null>(null);
   const roomRef = useRef<PeerRoom | null>(null);
   const attemptRef = useRef(0);
   const watchdogRef = useRef<ConnectionWatchdog | null>(null);
+  const joinRetryRef = useRef<number | null>(null);
+  const lastHeartbeatRef = useRef(0);
 
   const updateRoom = (next: PeerRoom) => { if (roomRef.current && next.round !== roomRef.current.round) setTyped(""); roomRef.current = next; setRoom(next); };
   const send = (message: WireMessage) => {
-    const connection = connectionRef.current;
-    if (connection?.open) connection.send(message);
+    relayRef.current?.send(message, message.type === "state");
   };
   const broadcast = (next: PeerRoom) => send({ type: "state", room: next });
   const startIfReady = (next: PeerRoom) => {
@@ -67,14 +67,23 @@ function App() {
     return winner ? finishPeerRoom(next, winner) : next;
   };
 
-  useEffect(() => () => { watchdogRef.current?.finish(); connectionRef.current?.close(); peerRef.current?.destroy(); }, []);
+  useEffect(() => () => {
+    watchdogRef.current?.finish();
+    if (joinRetryRef.current) clearInterval(joinRetryRef.current);
+    relayRef.current?.close();
+  }, []);
   useEffect(() => {
     const timer = window.setInterval(() => {
-      setClock(Date.now());
+      const now = Date.now();
+      setClock(now);
       const current = roomRef.current;
-      if (role === "police" && current?.status === "playing") {
-        const next = settle(current);
-        if (next !== current) { updateRoom(next); broadcast(next); }
+      if (role === "police" && current) {
+        const next = current.status === "playing" ? settle(current) : current;
+        if (next !== current) updateRoom(next);
+        if (next !== current || now - lastHeartbeatRef.current >= 1_500) {
+          broadcast(next);
+          lastHeartbeatRef.current = now;
+        }
       }
     }, 200);
     return () => clearInterval(timer);
@@ -109,26 +118,28 @@ function App() {
     }
   };
 
-  const failConnection = (attempt: number, type: string, action: "create" | "join") => {
+  const failConnection = (attempt: number, action: "create" | "join") => {
     if (attempt !== attemptRef.current) return;
     attemptRef.current += 1;
     watchdogRef.current?.finish();
-    connectionRef.current?.close();
-    peerRef.current?.destroy();
-    connectionRef.current = null;
-    peerRef.current = null;
+    if (joinRetryRef.current) clearInterval(joinRetryRef.current);
+    joinRetryRef.current = null;
+    relayRef.current?.close();
+    relayRef.current = null;
     setBusy(false);
     setConnectionStage("");
-    setError(connectionErrorMessage(type, action));
+    setError(action === "create"
+      ? "无法连接实时联机服务器，请检查网络后点“重新创建”"
+      : "没有收到房主响应。请确认房间号正确、房主页面保持打开，然后点“重新加入”");
   };
 
   const beginConnection = (stage: string, action: "create" | "join") => {
     attemptRef.current += 1;
     watchdogRef.current?.finish();
-    connectionRef.current?.close();
-    peerRef.current?.destroy();
-    connectionRef.current = null;
-    peerRef.current = null;
+    if (joinRetryRef.current) clearInterval(joinRetryRef.current);
+    joinRetryRef.current = null;
+    relayRef.current?.close();
+    relayRef.current = null;
     setBusy(true);
     setError("");
     setConnectionStage(stage);
@@ -136,73 +147,72 @@ function App() {
     return attemptRef.current;
   };
 
-  const connectHandlers = (connection: DataConnection, isHost: boolean, attempt: number) => {
-    connectionRef.current = connection;
-    connection.on("data", data => {
-      if (attempt !== attemptRef.current) return;
-      const message = data as WireMessage;
-      if (!message || typeof message !== "object" || !("type" in message)) return;
-      if (isHost) acceptHostMessage(message);
-      else if (message.type === "state") { updateRoom(message.room); setError(""); }
-      else if (message.type === "clock-pong") {
-        setHostOffset(estimateHostClockOffset(message.clientSentAt, Date.now(), message.hostNow));
-      }
-    });
-    connection.on("close", () => {
-      if (attempt === attemptRef.current) setError(isHost ? "对方已离开房间，可刷新页面重新创建" : "与房主的连接已断开，请重新加入");
-    });
-    connection.on("error", () => {
-      if (watchdogRef.current?.pending) failConnection(attempt, "webrtc", isHost ? "create" : "join");
-      else if (attempt === attemptRef.current) setError("联机通道出现异常，请重新加入");
-    });
+  const relayStatus = (attempt: number, status: RelayStatus) => {
+    if (attempt !== attemptRef.current) return;
+    if (status === "online") {
+      if (roomRef.current) setError("");
+      return;
+    }
+    if (roomRef.current) setError("联机服务器短暂断开，正在自动重连……");
   };
 
-  const createRoom = () => {
-    const attempt = beginConnection("正在连接房间服务器……", "create");
+  const createRoom = async () => {
+    const attempt = beginConnection("正在连接实时联机服务器……", "create");
     const code = randomCode();
-    const peer = new Peer(`zisu-${code}`, restrictedNetworkPeerOptions());
-    peerRef.current = peer;
-    watchdogRef.current = createConnectionWatchdog(18000, () => failConnection(attempt, "timeout", "create"));
-    peer.on("open", () => {
-      if (attempt !== attemptRef.current) return;
+    watchdogRef.current = createConnectionWatchdog(20000, () => failConnection(attempt, "create"));
+    try {
+      const relay = await connectRelay({
+        code,
+        role: "police",
+        onMessage: data => {
+          if (attempt !== attemptRef.current || !data || typeof data !== "object" || !("type" in data)) return;
+          acceptHostMessage(data as WireMessage);
+        },
+        onStatus: status => relayStatus(attempt, status),
+      });
+      if (attempt !== attemptRef.current) { relay.close(); return; }
+      relayRef.current = relay;
       watchdogRef.current?.finish();
-      setRole("police"); updateRoom(createPeerRoom(code, name, ARTICLES[Math.floor(Math.random() * ARTICLES.length)]));
+      const next = createPeerRoom(code, name, ARTICLES[Math.floor(Math.random() * ARTICLES.length)]);
+      setRole("police"); updateRoom(next); relay.send({ type: "state", room: next }, true);
       history.replaceState(null, "", `?room=${code}`); setBusy(false); setConnectionStage("");
-    });
-    peer.on("connection", connection => {
-      if (connectionRef.current?.open) { connection.close(); return; }
-      connectHandlers(connection, true, attempt);
-    });
-    peer.on("error", event => {
-      if (watchdogRef.current?.pending) failConnection(attempt, event.type, "create");
-      else if (attempt === attemptRef.current) setError("房间服务器连接异常，请刷新页面重新创建");
-    });
+    } catch {
+      failConnection(attempt, "create");
+    }
   };
 
-  const joinRoom = () => {
+  const joinRoom = async () => {
     const code = normalizeRoomCode(joinCode);
     if (!code) return setError("请输入正确的六位房间号");
-    const attempt = beginConnection("正在连接房间服务器……", "join");
-    const peer = new Peer(restrictedNetworkPeerOptions()); peerRef.current = peer;
-    watchdogRef.current = createConnectionWatchdog(18000, () => failConnection(attempt, "timeout", "join"));
-    peer.on("open", () => {
-      if (attempt !== attemptRef.current) return;
-      setConnectionStage("正在穿透校园网，必要时自动使用 443 中继……");
-      const connection = peer.connect(`zisu-${code}`, { reliable: true });
-      connectHandlers(connection, false, attempt);
-      connection.on("open", () => {
-        if (attempt !== attemptRef.current) return;
-        watchdogRef.current?.finish();
-        setRole("thief");
-        send({ type: "join", name });
-        send({ type: "clock-ping", clientSentAt: Date.now() });
-        setBusy(false); setConnectionStage("");
+    const attempt = beginConnection("正在连接实时联机服务器……", "join");
+    watchdogRef.current = createConnectionWatchdog(22000, () => failConnection(attempt, "join"));
+    try {
+      const relay = await connectRelay({
+        code,
+        role: "thief",
+        onMessage: data => {
+          if (attempt !== attemptRef.current || !data || typeof data !== "object" || !("type" in data)) return;
+          const message = data as WireMessage;
+          if (message.type === "state" && message.room.code === code) {
+            updateRoom(message.room); setRole("thief"); setError(""); setBusy(false); setConnectionStage("");
+            watchdogRef.current?.finish();
+            if (joinRetryRef.current) clearInterval(joinRetryRef.current);
+            joinRetryRef.current = null;
+          } else if (message.type === "clock-pong") {
+            setHostOffset(estimateHostClockOffset(message.clientSentAt, Date.now(), message.hostNow));
+          }
+        },
+        onStatus: status => relayStatus(attempt, status),
       });
-    });
-    peer.on("error", event => {
-      if (watchdogRef.current?.pending) failConnection(attempt, event.type, "join");
-      else if (attempt === attemptRef.current) setError("与房主的连接出现异常，请重新加入");
-    });
+      if (attempt !== attemptRef.current) { relay.close(); return; }
+      relayRef.current = relay;
+      setConnectionStage("已连接服务器中继，正在寻找房主……");
+      const announce = () => relay.send({ type: "join", name });
+      announce();
+      if (watchdogRef.current?.pending) joinRetryRef.current = window.setInterval(announce, 1_500);
+    } catch {
+      failConnection(attempt, "join");
+    }
   };
 
   const ready = () => {
@@ -242,7 +252,7 @@ function App() {
     <section className="connection-panel"><span className="overline">准备进入街道</span><h2>和朋友跑一场</h2><label htmlFor="nickname">你的昵称</label><input id="nickname" value={name} onChange={e=>setName(e.target.value)} maxLength={8} placeholder="输入你的名字"/>
       <button className="primary" disabled={busy || !name.trim()} onClick={createRoom}>创建房间 · 扮演警察 <span>↗</span></button><div className="divider">已有房间？加入追逐</div>
       <label htmlFor="roomcode">六位房间号</label><div className="join-row"><input id="roomcode" value={joinCode} onChange={e=>setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0,6))} placeholder="A7K2M9"/><button disabled={busy || !name.trim() || joinCode.length!==6} onClick={joinRoom}>{error && lastConnectionAction === "join" ? "重新加入" : "加入"}</button></div>
-      {busy && <p className="notice" aria-live="polite">{connectionStage}</p>}{error && <p role="alert" className="error">{error}</p>}<p className="host-note">已支持校园网常见的 443/TCP 中继。双方对局时请保持页面打开。</p>
+      {busy && <p className="notice" aria-live="polite">{connectionStage}</p>}{error && <p role="alert" className="error">{error}</p>}<p className="host-note">使用实时服务器转发，无需点对点穿透。双方对局时请保持页面打开。</p>
     </section><footer className="lobby-footer">双手就位。目光向前。 <span>每字 2 米 / 初始间距 20 米</span></footer>
   </main>;
 
