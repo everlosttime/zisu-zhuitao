@@ -10,6 +10,8 @@ import {
   remainingRoundMs,
   distanceGapMeters,
 } from "../lib/game.ts";
+import * as gameModule from "../lib/game.ts";
+import * as articleModule from "../lib/articles.ts";
 import { ARTICLES } from "../lib/articles.ts";
 
 test("中文标点和排版空白会被统一后比较", () => {
@@ -52,10 +54,34 @@ test("昵称去除多余空白并限制为八个字符", () => {
   assert.equal(sanitizeName("  小 王 同 学 123  "), "小王同学123");
 });
 
-test("内置十篇足够完成两分钟对局的原创中文文章", () => {
-  assert.equal(ARTICLES.length, 10);
+test("内置词库有两百条原创句子和三十篇足够完成比赛的文章", () => {
+  assert.ok(Array.isArray(articleModule.SENTENCES));
+  assert.equal(articleModule.SENTENCES.length, 200);
+  assert.equal(new Set(articleModule.SENTENCES).size, 200);
+  assert.ok(articleModule.SENTENCES.every((sentence) => Array.from(sentence).length >= 18));
+  assert.equal(ARTICLES.length, 30);
   assert.ok(ARTICLES.every((article) => Array.from(article).length >= 800));
-  assert.equal(new Set(ARTICLES).size, 10);
+  assert.equal(new Set(ARTICLES).size, 30);
+  for (const article of ARTICLES) {
+    const sentences = article.match(/[^。！？]+[。！？]/gu) ?? [];
+    assert.equal(sentences.length, 45);
+    assert.equal(new Set(sentences).size, sentences.length);
+  }
+});
+
+test("AI uses fixed low medium and high speeds and follows elapsed time", () => {
+  assert.deepEqual(gameModule.AI_SPEEDS, { low: 20, medium: 40, high: 60 });
+  assert.equal(gameModule.aiProgressAt(20, -1, 800), 0);
+  assert.equal(gameModule.aiProgressAt(20, 60_000, 800), 20);
+  assert.equal(gameModule.aiProgressAt(40, 60_000, 800), 40);
+  assert.equal(gameModule.aiProgressAt(60, 30_000, 800), 30);
+  assert.equal(gameModule.aiProgressAt(60, 120_000, 50), 50);
+});
+
+test("文章重赛索引会遍历完整词库后回到开头", () => {
+  assert.equal(typeof articleModule.nextArticleIndex, "function");
+  assert.equal(articleModule.nextArticleIndex(28), 29);
+  assert.equal(articleModule.nextArticleIndex(29), 0);
 });
 
 test("三秒倒计时结束前服务端不接受输入", () => {

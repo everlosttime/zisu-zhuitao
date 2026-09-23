@@ -2,6 +2,20 @@ export const ROUND_MS = 120_000;
 export const STARTING_GAP = 20;
 export const METERS_PER_CHAR = 2;
 
+export type AiDifficulty = "low" | "medium" | "high";
+export const AI_SPEEDS: Record<AiDifficulty, number> = {
+  low: 20,
+  medium: 40,
+  high: 60,
+};
+
+export function aiProgressAt(speedCpm: number, elapsedMs: number, articleLength: number) {
+  const safeSpeed = Number.isFinite(speedCpm) ? Math.max(0, speedCpm) : 0;
+  const safeElapsed = Number.isFinite(elapsedMs) ? Math.max(0, elapsedMs) : 0;
+  const safeLength = Number.isFinite(articleLength) ? Math.max(0, Math.floor(articleLength)) : 0;
+  return Math.min(safeLength, Math.floor(safeElapsed * safeSpeed / 60_000));
+}
+
 const PUNCTUATION: Record<string, string> = {
   "，": ",", "。": ".", "！": "!", "？": "?", "：": ":", "；": ";",
   "（": "(", "）": ")", "“": '"', "”": '"', "‘": "'", "’": "'",

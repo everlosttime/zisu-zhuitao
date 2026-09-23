@@ -10,6 +10,7 @@ import {
   estimateHostClockOffset,
   type PeerMessage,
 } from "../fallback/src/peer-room.ts";
+import * as peerRoomModule from "../fallback/src/peer-room.ts";
 
 test("备用入口只接受不易混淆的六位房间号", () => {
   assert.equal(normalizeRoomCode(" a7k2m9 "), "A7K2M9");
@@ -74,4 +75,23 @@ test("再来一局会清空双方进度并替换文章", () => {
 
 test("按往返时间中点估算房主时钟偏移", () => {
   assert.equal(estimateHostClockOffset(1000, 1200, 2100), 1000);
+});
+
+test("本地训练让玩家当警察且电脑按所选难度稳定推进", () => {
+  assert.equal(typeof peerRoomModule.createAiPeerRoom, "function");
+  const article = "春风吹过河边，树叶在阳光下轻轻摇动。".repeat(5);
+  const room = peerRoomModule.createAiPeerRoom("小明", article, "high", 1000);
+  assert.equal(room.status, "playing");
+  assert.equal(room.startedAt, 4000);
+  assert.equal(room.police.name, "小明");
+  assert.equal(room.police.ready, true);
+  assert.equal(room.thief?.name, "电脑小偷");
+
+  const countdown = peerRoomModule.advanceAiPeerRoom(room, "high", 3999);
+  assert.equal(countdown.thief?.progress, 0);
+  const halfMinute = peerRoomModule.advanceAiPeerRoom(room, "high", 34_000);
+  assert.equal(halfMinute.thief?.progress, 30);
+  const finished = peerRoomModule.advanceAiPeerRoom(room, "low", 124_000);
+  assert.equal(finished.status, "finished");
+  assert.equal(finished.winner, "thief");
 });

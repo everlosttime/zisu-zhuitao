@@ -1,8 +1,8 @@
-import { StrictMode, useEffect, useRef, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { ARTICLES } from "../../lib/articles.ts";
-import { distanceGapMeters, normalizeForTyping, remainingRoundMs, resolveWinner, scoreSubmission } from "../../lib/game.ts";
-import { applyPeerMessage, createPeerRoom, estimateHostClockOffset, finishPeerRoom, normalizeRoomCode, replayPeerRoom, type PeerMessage, type PeerRoom, type Role } from "./peer-room.ts";
+import { ARTICLES, nextArticleIndex } from "../../lib/articles.ts";
+import { AI_SPEEDS, distanceGapMeters, remainingRoundMs, resolveWinner, scoreSubmission, type AiDifficulty } from "../../lib/game.ts";
+import { advanceAiPeerRoom, applyPeerMessage, createAiPeerRoom, createPeerRoom, estimateHostClockOffset, finishPeerRoom, normalizeRoomCode, replayPeerRoom, type PeerMessage, type PeerRoom, type Role } from "./peer-room.ts";
 import "./style.css";
 import "./cinema.css";
 import RaceScene from "./RaceScene";
@@ -17,6 +17,7 @@ type WireMessage = PeerMessage
   | { type: "clock-ping"; clientSentAt: number }
   | { type: "clock-pong"; clientSentAt: number; hostNow: number };
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const DIFFICULTY_LABELS: Record<AiDifficulty, string> = { low: "低", medium: "中", high: "高" };
 
 function randomCode() {
   const bytes = crypto.getRandomValues(new Uint8Array(6));
@@ -25,6 +26,9 @@ function randomCode() {
 
 function App() {
   const [name, setName] = useState("");
+  const [mode, setMode] = useState<"friend" | "ai">("friend");
+  const [aiDifficulty, setAiDifficulty] = useState<AiDifficulty>("low");
+  const [localAi, setLocalAi] = useState(false);
   const [joinCode, setJoinCode] = useState(() => new URLSearchParams(location.search).get("room")?.toUpperCase() || "");
   const [room, setRoom] = useState<PeerRoom | null>(null);
   const [role, setRole] = useState<Role | null>(null);
@@ -36,7 +40,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [connectionStage, setConnectionStage] = useState("");
   const [lastConnectionAction, setLastConnectionAction] = useState<"create" | "join" | null>(null);
-  const [clock, setClock] = useState(Date.now());
+  const [clock, setClock] = useState(0);
   const [hostOffset, setHostOffset] = useState(0);
   const [copied, setCopied] = useState(false);
   const relayRef = useRef<RelayConnection | null>(null);
@@ -47,25 +51,29 @@ function App() {
   const lastHeartbeatRef = useRef(0);
 
   const updateRoom = (next: PeerRoom) => { if (roomRef.current && next.round !== roomRef.current.round) setTyped(""); roomRef.current = next; setRoom(next); };
-  const send = (message: WireMessage) => {
+  const send = useCallback((message: WireMessage) => {
     relayRef.current?.send(message, message.type === "state");
-  };
-  const broadcast = (next: PeerRoom) => send({ type: "state", room: next });
+  }, []);
+  const broadcast = useCallback((next: PeerRoom) => send({ type: "state", room: next }), [send]);
   const startIfReady = (next: PeerRoom) => {
     if (next.status === "waiting" && next.police.ready && next.thief?.ready) {
       return applyPeerMessage(next, { type: "start", startedAt: Date.now() + 3000 });
     }
     return next;
   };
-  const settle = (next: PeerRoom) => {
-    if (next.status !== "playing" || !next.startedAt) return next;
+  const settle = useCallback((roomToSettle: PeerRoom, now = Date.now()) => {
+    let next = roomToSettle;
+    if (localAi && role === "police") {
+      next = advanceAiPeerRoom(next, next.aiDifficulty ?? aiDifficulty, now);
+    }
+    if (next.status !== "playing" || next.startedAt === null) return next;
     const winner = resolveWinner({
       policeProgress: next.police.progress,
       thiefProgress: next.thief?.progress || 0,
-      elapsedMs: Date.now() - next.startedAt,
+      elapsedMs: now - next.startedAt,
     });
-    return winner ? finishPeerRoom(next, winner) : next;
-  };
+    return winner ? finishPeerRoom(next, winner, now) : next;
+  }, [localAi, role, aiDifficulty]);
 
   useEffect(() => () => {
     watchdogRef.current?.finish();
@@ -78,7 +86,7 @@ function App() {
       setClock(now);
       const current = roomRef.current;
       if (role === "police" && current) {
-        const next = current.status === "playing" ? settle(current) : current;
+        const next = current.status === "playing" ? settle(current, now) : current;
         if (next !== current) updateRoom(next);
         if (next !== current || now - lastHeartbeatRef.current >= 1_500) {
           broadcast(next);
@@ -87,14 +95,14 @@ function App() {
       }
     }, 200);
     return () => clearInterval(timer);
-  }, [role]);
+  }, [role, localAi, aiDifficulty, broadcast, settle]);
   useEffect(() => {
     if (role !== "thief") return;
     const ping = () => send({ type: "clock-ping", clientSentAt: Date.now() });
     ping();
     const timer = window.setInterval(ping, 5000);
     return () => clearInterval(timer);
-  }, [role]);
+  }, [role, send]);
 
   const acceptHostMessage = (message: WireMessage) => {
     const current = roomRef.current;
@@ -113,7 +121,8 @@ function App() {
       updateRoom(next); broadcast(next); return;
     }
     if (message.type === "replay-request" && current.status === "finished") {
-      const next = replayPeerRoom(current, ARTICLES[current.round % ARTICLES.length]);
+      const currentIndex = ARTICLES.indexOf(current.article);
+      const next = replayPeerRoom(current, ARTICLES[nextArticleIndex(currentIndex < 0 ? current.round : currentIndex)]);
       setTyped(""); updateRoom(next); broadcast(next);
     }
   };
@@ -131,6 +140,29 @@ function App() {
     setError(action === "create"
       ? "无法连接实时联机服务器，请检查网络后点“重新创建”"
       : "没有收到房主响应。请确认房间号正确、房主页面保持打开，然后点“重新加入”");
+  };
+
+  const startAiMatch = (difficulty: AiDifficulty, articleIndex: number, round = 1) => {
+    const now = Date.now();
+    const safeIndex = ((articleIndex % ARTICLES.length) + ARTICLES.length) % ARTICLES.length;
+    const next = createAiPeerRoom(name, ARTICLES[safeIndex], difficulty, now, round, safeIndex);
+    setTyped("");
+    setError("");
+    setHostOffset(0);
+    setLocalAi(true);
+    setRole("police");
+    updateRoom(next);
+    history.replaceState(null, "", location.pathname);
+  };
+
+  const leaveAiMatch = () => {
+    roomRef.current = null;
+    setRoom(null);
+    setRole(null);
+    setTyped("");
+    setError("");
+    setLocalAi(false);
+    history.replaceState(null, "", location.pathname);
   };
 
   const beginConnection = (stage: string, action: "create" | "join") => {
@@ -236,8 +268,17 @@ function App() {
 
   const replay = () => {
     if (!room) return;
+    if (localAi) {
+      if (!room.aiDifficulty || room.articleIndex === undefined) return;
+      startAiMatch(room.aiDifficulty, nextArticleIndex(room.articleIndex), room.round + 1);
+      return;
+    }
     setTyped("");
-    if (role === "police") { const next = replayPeerRoom(room, ARTICLES[room.round % ARTICLES.length]); updateRoom(next); broadcast(next); }
+    if (role === "police") {
+      const currentIndex = ARTICLES.indexOf(room.article);
+      const next = replayPeerRoom(room, ARTICLES[nextArticleIndex(currentIndex < 0 ? room.round : currentIndex)]);
+      updateRoom(next); broadcast(next);
+    }
     else send({ type: "replay-request" });
   };
   const synchronizedClock = clock + (role === "thief" ? hostOffset : 0);
@@ -245,15 +286,39 @@ function App() {
   useEffect(() => { if(started && room?.status === 'playing') inputRef.current?.focus(); }, [started, room?.status]);
 
   if (!room) return <main className="cinema-lobby">
-    <RaceScene gap={18} progress={0} running role="police" cinematic/>
-    <div className="lobby-shade"/>
+    <RaceScene gap={18} progress={0} running role="police" cinematic />
+    <div className="lobby-shade" />
     <header className="cinema-brand"><span className="brand-symbol">Z</span> 字速追逃 <small>3D CHASE</small></header>
-    <section className="lobby-intro"><span className="overline">中文打字 · 双人实时追逐</span><h1>下一秒，<br/>追上你。</h1><p>穿过街道，紧追不舍。<br/>每一个正确的字，让你前进两米。</p><div className="lobby-tags"><span>方块小镇 · 坐骑追逐</span><span>字幕式打字</span><span>120 秒追逐</span></div></section>
-    <section className="connection-panel"><span className="overline">准备进入街道</span><h2>和朋友跑一场</h2><label htmlFor="nickname">你的昵称</label><input id="nickname" value={name} onChange={e=>setName(e.target.value)} maxLength={8} placeholder="输入你的名字"/>
-      <button className="primary" disabled={busy || !name.trim()} onClick={createRoom}>创建房间 · 扮演警察 <span>↗</span></button><div className="divider">已有房间？加入追逐</div>
-      <label htmlFor="roomcode">六位房间号</label><div className="join-row"><input id="roomcode" value={joinCode} onChange={e=>setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0,6))} placeholder="A7K2M9"/><button disabled={busy || !name.trim() || joinCode.length!==6} onClick={joinRoom}>{error && lastConnectionAction === "join" ? "重新加入" : "加入"}</button></div>
-      {busy && <p className="notice" aria-live="polite">{connectionStage}</p>}{error && <p role="alert" className="error">{error}</p>}<p className="host-note">使用实时服务器转发，无需点对点穿透。双方对局时请保持页面打开。</p>
-    </section><footer className="lobby-footer">双手就位。目光向前。 <span>每字 2 米 / 初始间距 20 米</span></footer>
+    <section className="lobby-intro"><span className="overline">中文打字 · 人机与好友追逐</span><h1>下一秒，<br />追上你。</h1><p>穿过街道，紧追不舍。<br />每一个正确的字，让你前进两米。</p><div className="lobby-tags"><span>方块小镇 · 坐骑追逐</span><span>人机训练 · 好友联机</span><span>120 秒追逐</span></div></section>
+    <section className="connection-panel">
+      <span className="overline">准备进入街道</span>
+      <h2>{mode === "friend" ? "和朋友跑一场" : "和电脑追一场"}</h2>
+      <div className="mode-switch" role="group" aria-label="选择对战模式">
+        <button type="button" className={mode === "friend" ? "selected" : ""} aria-pressed={mode === "friend"} onClick={() => { setMode("friend"); setError(""); }}>好友对战</button>
+        <button type="button" className={mode === "ai" ? "selected" : ""} aria-pressed={mode === "ai"} onClick={() => { setMode("ai"); setError(""); }}>人机训练</button>
+      </div>
+      <label htmlFor="nickname">你的昵称</label>
+      <input id="nickname" value={name} onChange={event => setName(event.target.value)} maxLength={8} placeholder="输入你的名字" />
+      {mode === "ai" ? <>
+        <fieldset className="difficulty-picker">
+          <legend>选择电脑速度</legend>
+          {(Object.keys(AI_SPEEDS) as AiDifficulty[]).map(difficulty => <button type="button" key={difficulty} className={aiDifficulty === difficulty ? "selected" : ""} aria-pressed={aiDifficulty === difficulty} onClick={() => setAiDifficulty(difficulty)}>
+            <strong>{DIFFICULTY_LABELS[difficulty]}难度</strong><span>{AI_SPEEDS[difficulty]} 字/分</span>
+          </button>)}
+        </fieldset>
+        <button className="primary" disabled={!name.trim()} onClick={() => startAiMatch(aiDifficulty, Math.floor(Math.random() * ARTICLES.length))}>开始训练 · 扮演警察 <span>↗</span></button>
+        <p className="host-note">电脑小偷按固定速度前进，低、中、高分别为 20、40、60 字/分。</p>
+      </> : <>
+        <button className="primary" disabled={busy || !name.trim()} onClick={createRoom}>创建房间 · 扮演警察 <span>↗</span></button>
+        <div className="divider">已有房间？加入追逐</div>
+        <label htmlFor="roomcode">六位房间号</label>
+        <div className="join-row"><input id="roomcode" value={joinCode} onChange={event => setJoinCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6))} placeholder="A7K2M9" /><button disabled={busy || !name.trim() || joinCode.length !== 6} onClick={joinRoom}>{error && lastConnectionAction === "join" ? "重新加入" : "加入"}</button></div>
+        {busy && <p className="notice" aria-live="polite">{connectionStage}</p>}
+        {error && <p role="alert" className="error">{error}</p>}
+        <p className="host-note">使用实时服务器转发，无需点对点穿透。双方对局时请保持页面打开。</p>
+      </>}
+    </section>
+    <footer className="lobby-footer">双手就位。目光向前。 <span>每字 2 米 / 初始间距 20 米</span></footer>
   </main>;
 
   const own = role === "police" ? room.police : room.thief;
@@ -273,14 +338,14 @@ function App() {
     <ChaseAudio gap={gap} running={room.status==='playing'&&started}/>
     <RaceScene gap={gap} progress={own?.progress||0} running={room.status==='playing'&&started} role={role||'police'}/>
     <div className="scene-vignette"/>
-    <header className="chase-hud"><div className="cinema-brand"><span className="brand-symbol">Z</span> 字速追逃 <small>3D</small></div><button className="share-room" onClick={async()=>{try {await navigator.clipboard.writeText(shareUrl);setCopied(true);setTimeout(()=>setCopied(false),1500);}catch{setError(`请手动分享房间号：${room.code}`);}}}>房间 {room.code} <span>{copied?'已复制':'复制邀请'}</span></button><span className="hud-round">第 {room.round} 局</span></header>
+    <header className="chase-hud"><div className="cinema-brand"><span className="brand-symbol">Z</span> 字速追逃 <small>3D</small></div>{localAi ? <span className="ai-match-badge">人机训练 · {DIFFICULTY_LABELS[room.aiDifficulty ?? aiDifficulty]}难度</span> : <button className="share-room" onClick={async()=>{try {await navigator.clipboard.writeText(shareUrl);setCopied(true);setTimeout(()=>setCopied(false),1500);}catch{setError(`请手动分享房间号：${room.code}`);}}}>房间 {room.code} <span>{copied?'已复制':'复制邀请'}</span></button>}<span className="hud-round">第 {room.round} 局</span></header>
     <div className="race-summary"><span className="overline">{role==='police'?'你的目标：追上前方的小偷':'你的目标：坚持到倒计时结束'}</span><div className="distance-number">{Math.max(0,Math.ceil(gap))}<small>米</small></div><span className="distance-caption">{gap<=0?'追捕成功':gap>30?'真实距离 · 画面间距已压缩':'双方距离'}</span></div>
     {room.status === "playing" && <div role="status" className={`chase-pressure ${gap < 10 ? "is-danger" : ""}`}>{gap < 10 ? (role === "thief" ? "警察就在身后！继续打字加速" : "马上追上！继续打字冲刺") : (role === "thief" ? "留意身后的摩托 · 打字拉开距离" : "盯紧前方自行车 · 打字追近")}</div>}
-    <aside className="players-hud"><div><i className="police-dot"/><span>警察 · {room.police.name}</span><b>{room.police.progress*2} 米</b></div><div><i className="thief-dot"/><span>小偷 · {room.thief?.name||'等待加入'}</span><b>{(room.thief?.progress||0)*2} 米</b></div></aside>
+    <aside className="players-hud"><div><i className="police-dot"/><span>警察 · {room.police.name}</span><b>{room.police.progress*2} 米</b></div><div><i className="thief-dot"/><span>{localAi ? "电脑小偷" : "小偷"} · {room.thief?.name||'等待加入'}</span><b>{(room.thief?.progress||0)*2} 米</b></div></aside>
     <div className="timer-hud"><span>剩余时间</span><strong>{String(Math.floor(remaining/60000)).padStart(2,'0')}:{String(Math.floor(remaining%60000/1000)).padStart(2,'0')}</strong></div>
     {room.status==='playing'&&!started&&<div className="start-count"><small>双手就位 · 即将出发</small><strong>{countdown||'开始'}</strong></div>}
     {room.status==='waiting'?<section className="race-modal"><span className="overline">{room.thief?'对手已就位':'街道已经准备好'}</span><h2>{room.thief?'准备，开始追逐':'等待朋友加入'}</h2><p>{room.thief?`${room.police.name} 对战 ${room.thief.name}`:`把房间号 ${room.code} 发给朋友`}</p><button className="primary" disabled={!room.thief||!!own?.ready} onClick={ready}>{own?.ready?'已准备 · 等待对方':'我准备好了 →'}</button><small>每字两米，初始相距二十米。</small></section>
-    :room.status==='finished'?<section className="race-modal"><span className="overline">本局结束</span><h2>{room.winner==='void'?'本局无人输入':room.winner===role?'这次，你赢了。':'再来，一定追上。'}</h2><p>{room.winner==='police'?'警察成功追上小偷':room.winner==='thief'?'小偷坚持到了最后一秒':'准备好后再出发'}</p><button className="primary" onClick={replay}>再来一局 ↗</button></section>
+    :room.status==='finished'?<section className="race-modal"><span className="overline">本局结束</span><h2>{room.winner==='void'?'本局无人输入':room.winner===role?'这次，你赢了。':'再来，一定追上。'}</h2><p>{room.winner==='police'?'警察成功追上小偷':room.winner==='thief'?'小偷坚持到了最后一秒':'准备好后再出发'}</p><button className="primary" onClick={replay}>再来一局 ↗</button>{localAi && <button className="secondary-action" onClick={leaveAiMatch}>返回大厅</button>}</section>
     :<section className="subtitle-deck" aria-label="打字字幕"><div className="subtitle-meta"><span>跟着字幕，继续向前</span><span>{speed} 字/分 <i/> 正确率 {accuracy}%</span></div><div className="chinese-subtitle" aria-label="当前中文字幕"><span className="subtitle-done">{subtitle.text.slice(0,completed)}</span><span className={score.hasError?'subtitle-wrong':'subtitle-current'}>{subtitle.text.slice(completed,completed+1)}</span><span>{subtitle.text.slice(completed+1)}</span></div><label className="sr-only" htmlFor="subtitle-input">输入当前字幕</label><textarea ref={inputRef} id="subtitle-input" rows={1} value={imeDraft ?? currentInput} disabled={!started} spellCheck={false} onPaste={e=>{e.preventDefault();setError('对战中不能粘贴文字');}} onDrop={e=>e.preventDefault()} onCompositionStart={e=>{composing.current=true;setImeDraft(e.currentTarget.value);}} onCompositionEnd={e=>{composing.current=false;setImeDraft(null);submitProgress(typed.slice(0,subtitle.start)+e.currentTarget.value);}} onChange={e=>{if(composing.current)setImeDraft(e.target.value);else submitProgress(typed.slice(0,subtitle.start)+e.target.value);}} placeholder={started?'在这里输入上方字幕……':'倒计时结束后开始输入'}/><div className="subtitle-hint">{score.hasError?'有个字打错了，退格修正后继续':'中文输入法可用 · 中英文标点通用 · 每字前进 2 米'}</div></section>}
     {error&&<p role="alert" className="floating-error">{error}</p>}
   </main>;

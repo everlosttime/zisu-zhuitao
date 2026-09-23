@@ -1,4 +1,4 @@
-import { ROUND_MS, sanitizeName } from "../../lib/game.ts";
+import { AI_SPEEDS, ROUND_MS, aiProgressAt, normalizeForTyping, resolveWinner, sanitizeName, type AiDifficulty } from "../../lib/game.ts";
 
 export type Role = "police" | "thief";
 export type Player = {
@@ -20,6 +20,8 @@ export type PeerRoom = {
   police: Player;
   thief: Player | null;
   updatedAt: number;
+  aiDifficulty?: AiDifficulty;
+  articleIndex?: number;
 };
 
 export type PeerMessage =
@@ -94,6 +96,41 @@ export function applyPeerMessage(room: PeerRoom, message: PeerMessage, now = Dat
 
 export function finishPeerRoom(room: PeerRoom, winner: Role | "void", now = Date.now()): PeerRoom {
   return { ...room, status: "finished", winner, updatedAt: now };
+}
+
+export function createAiPeerRoom(name: string, article: string, difficulty: AiDifficulty, now = Date.now(), round = 1, articleIndex = 0): PeerRoom {
+  return {
+    code: "LOCALAI",
+    status: "playing",
+    round,
+    article,
+    startedAt: now + 3_000,
+    durationMs: ROUND_MS,
+    winner: null,
+    police: { name: sanitizeName(name), ready: true, progress: 0, correct: 0, typed: 0 },
+    thief: { name: "电脑小偷", ready: true, progress: 0, correct: 0, typed: 0 },
+    updatedAt: now,
+    aiDifficulty: difficulty,
+    articleIndex,
+  };
+}
+
+export function advanceAiPeerRoom(room: PeerRoom, difficulty: AiDifficulty, now: number): PeerRoom {
+  if (room.status !== "playing" || room.startedAt === null || !room.thief) return room;
+  const elapsedMs = now - room.startedAt;
+  const progress = aiProgressAt(
+    AI_SPEEDS[difficulty],
+    elapsedMs,
+    Array.from(normalizeForTyping(room.article)).length,
+  );
+  if (progress === room.thief.progress && elapsedMs < ROUND_MS) return room;
+  const next: PeerRoom = {
+    ...room,
+    thief: { ...room.thief, progress, correct: progress, typed: progress },
+    updatedAt: now,
+  };
+  const winner = resolveWinner({ policeProgress: next.police.progress, thiefProgress: progress, elapsedMs });
+  return winner ? finishPeerRoom(next, winner, now) : next;
 }
 
 export function replayPeerRoom(room: PeerRoom, article: string, now = Date.now()): PeerRoom {

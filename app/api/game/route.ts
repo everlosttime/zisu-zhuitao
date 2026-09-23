@@ -1,4 +1,4 @@
-import { ARTICLES } from "@/lib/articles";
+import { ARTICLES, nextArticleIndex } from "@/lib/articles";
 import { canAcceptTyping, ROUND_MS, resolveWinner, sanitizeName, scoreSubmission } from "@/lib/game";
 import { createRoom, execute, findRoom, type RoomRow } from "@/db/game-store";
 
@@ -123,7 +123,8 @@ export async function POST(request: Request) {
       room = await settleIfNeeded((await findRoom(room.code))!);
     } else if (action === "replay") {
       if (room.status !== "finished") return failure("本局还没有结束");
-      await execute("UPDATE rooms SET status = 'waiting', round = round + 1, article_index = (article_index + 1) % 10, started_at = NULL, winner = NULL, police_ready = 0, thief_ready = 0, police_progress = 0, thief_progress = 0, police_correct = 0, thief_correct = 0, police_typed = 0, thief_typed = 0, police_seq = 0, thief_seq = 0, police_seen_at = ?, thief_seen_at = ?, updated_at = ? WHERE id = ? AND status = 'finished'", now, now, now, room.id);
+      const nextIndex = nextArticleIndex(room.article_index);
+      await execute("UPDATE rooms SET status = 'waiting', round = round + 1, article_index = ?, started_at = NULL, winner = NULL, police_ready = 0, thief_ready = 0, police_progress = 0, thief_progress = 0, police_correct = 0, thief_correct = 0, police_typed = 0, thief_typed = 0, police_seq = 0, thief_seq = 0, police_seen_at = ?, thief_seen_at = ?, updated_at = ? WHERE id = ? AND status = 'finished'", nextIndex, now, now, now, room.id);
       room = (await findRoom(room.code))!;
     } else {
       return failure("未知操作");
