@@ -85,6 +85,6 @@
 - [x] Run ESLint on all changed TypeScript files and confirm no diagnostics.
 - [x] Run `npm run build:fallback` and confirm the pixel static bundle is produced.
 - [x] Request the local preview page, JavaScript bundle, and CSS bundle over HTTP and confirm HTTP 200 plus pixel and AI UI markers.
-- [ ] Commit and push the source changes to `main` after reviewing the working-tree diff.
-- [ ] Publish `fallback-dist/` to the existing `gh-pages` branch without force-pushing.
-- [ ] Verify the deployed page and referenced resources return HTTP 200 and show the new title and feature markers.
+- [x] Commit and push the source changes to `main` after reviewing the working-tree diff.
+- [x] Publish `fallback-dist/` to the existing `gh-pages` branch without force-pushing.
+- [x] Verify the deployed page and referenced resources return HTTP 200 and show the new title and feature markers.
